@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Face Authentication Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --border: #374151;
+      --green: #22c55e;
+      --red: #ef4444;
+      --blue: #3b82f6;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 14px;
+      padding: 14px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 20px; }
+    h2 { font-size: 18px; }
+    .muted { color: var(--muted); font-size: 13px; }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px 0;
+    }
+
+    .tab-button {
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 9px 13px;
+      border-radius: 10px 10px 0 0;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .tab-button.active {
+      background: var(--blue);
+      border-color: var(--blue);
+    }
+
+    .tab-content {
+      display: none;
+      height: calc(100% - 104px);
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .tab-content.active { display: block; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th, td {
+      padding: 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--panel-2);
+      z-index: 1;
+    }
+
+    .empty {
+      padding: 22px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    .latest-body {
+      height: calc(100% - 55px);
+      display: grid;
+      grid-template-columns: minmax(220px, 360px) 1fr;
+      gap: 18px;
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .attempt-image-wrap {
+      width: 100%;
+      height: 100%;
+      min-height: 220px;
+      background: #020617;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .attempt-image-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+    .attempt-details {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      justify-content: center;
+      font-size: 16px;
+    }
+
+    .status {
+      font-size: 28px;
+      font-weight: 800;
+    }
+
+    .status.ok { color: var(--green); }
+    .status.bad { color: var(--red); }
+
+    .detail-row strong {
+      display: inline-block;
+      min-width: 110px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 800px) {
+      .latest-body { grid-template-columns: 1fr; }
+      th, td { font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="panel">
+      <div class="panel-header">
+        <h1>Face Authentication Dashboard</h1>
+        <p class="muted">Auto-updates every 1 second</p>
+      </div>
+
+      <div class="tabs">
+        <button id="activeUsersTabButton" class="tab-button active" onclick="showTab('activeUsers')">Active Users</button>
+        <button id="loginHistoryTabButton" class="tab-button" onclick="showTab('loginHistory')">Login History</button>
+      </div>
+
+      <div id="activeUsers" class="tab-content active">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Person ID</th>
+              <th>Entry Time</th>
+              <th>Current Duration</th>
+            </tr>
+          </thead>
+          <tbody id="activeUsersBody"></tbody>
+        </table>
+        <div id="activeUsersEmpty" class="empty">No active users</div>
+      </div>
+
+      <div id="loginHistory" class="tab-content">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Person ID</th>
+              <th>Login Time</th>
+              <th>Logout Time</th>
+              <th>Duration</th>
+              <th>Login Count</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+        <div id="historyEmpty" class="empty">No login history</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Latest Attempt</h2>
+        <p id="latestHint" class="muted">Clears automatically after 10 seconds</p>
+      </div>
+      <div id="latestAttemptBody" class="latest-body">
+        <div class="empty">No recent attempt</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>'"]/g, function (char) {
+        return {
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          "'": '&#39;',
+          '"': '&quot;'
+        }[char];
+      });
+    }
+
+    function showTab(tabId) {
+      document.getElementById('activeUsers').classList.toggle('active', tabId === 'activeUsers');
+      document.getElementById('loginHistory').classList.toggle('active', tabId === 'loginHistory');
+      document.getElementById('activeUsersTabButton').classList.toggle('active', tabId === 'activeUsers');
+      document.getElementById('loginHistoryTabButton').classList.toggle('active', tabId === 'loginHistory');
+    }
+
+    function renderTableRows(tbodyId, emptyId, rows, columns) {
+      const tbody = document.getElementById(tbodyId);
+      const empty = document.getElementById(emptyId);
+      tbody.innerHTML = '';
+
+      if (!rows || rows.length === 0) {
+        empty.style.display = 'block';
+        return;
+      }
+
+      empty.style.display = 'none';
+      for (const row of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = columns.map((key) => `<td>${escapeHtml(row[key] ?? '-')}</td>`).join('');
+        tbody.appendChild(tr);
+      }
+    }
+
+    function renderLatestAttempt(attempt) {
+      const body = document.getElementById('latestAttemptBody');
+      if (!attempt) {
+        body.innerHTML = '<div class="empty">No recent attempt</div>';
+        return;
+      }
+
+      const isAuthenticated = attempt.authenticated === true;
+      const statusClass = isAuthenticated ? 'ok' : 'bad';
+      const statusText = isAuthenticated ? 'User Authenticated' : 'User Rejected';
+      const imageHtml = attempt.image_url
+        ? `<img src="${escapeHtml(attempt.image_url)}" alt="Latest received face image">`
+        : '<span class="muted">No image available</span>';
+
+      const userRows = isAuthenticated
+        ? `
+          <div class="detail-row"><strong>Name:</strong> ${escapeHtml(attempt.name)}</div>
+          <div class="detail-row"><strong>Action:</strong> ${escapeHtml(attempt.action)}</div>
+        `
+        : '';
+
+      body.innerHTML = `
+        <div class="attempt-image-wrap">${imageHtml}</div>
+        <div class="attempt-details">
+          <div class="status ${statusClass}">${statusText}</div>
+          ${userRows}
+          <div class="detail-row"><strong>Timestamp:</strong> ${escapeHtml(attempt.timestamp)}</div>
+        </div>
+      `;
+    }
+
+    async function refreshDashboard() {
+      try {
+        const response = await fetch('/api/state', { cache: 'no-store' });
+        const data = await response.json();
+
+        renderTableRows(
+          'activeUsersBody',
+          'activeUsersEmpty',
+          data.active_users,
+          ['name', 'person_id', 'entry_time', 'current_duration']
+        );
+
+        renderTableRows(
+          'historyBody',
+          'historyEmpty',
+          data.login_history,
+          ['name', 'person_id', 'login_time', 'logout_time', 'duration', 'login_count', 'status']
+        );
+
+        renderLatestAttempt(data.latest_attempt);
+      } catch (error) {
+        console.error('Dashboard refresh failed:', error);
+      }
+    }
+
+    refreshDashboard();
+    setInterval(refreshDashboard, 1000);
+  </script>
+</body>
+</html>

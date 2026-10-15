@@ -1,0 +1,289 @@
+# ESP32 1 - camera node (MicroPython)
+# Job: connect to WiFi, capture one JPEG image, publish it to the laptop MQTT broker,
+# and listen for reject payload b"0" from the server.
+#
+# IMPORTANT:
+# 1. Change WIFI_SSID, WIFI_PASSWORD, and MQTT_BROKER_IP.
+# 2. MQTT_BROKER_IP must be your laptop IP address, not "localhost".
+# 3. Install/use umqtt.simple on the ESP32 MicroPython firmware.
+
+import machine
+import network
+import time
+import gc
+import os
+from umqtt.simple import MQTTClient
+
+# -------------------- USER SETTINGS --------------------
+WIFI_SSID = "your_wifi_name"
+WIFI_PASSWORD = "your_wifi_password"
+MQTT_BROKER_IP = "192.168.1.100"  # your laptop IP
+MQTT_BROKER_PORT = 1883
+MQTT_CLIENT_ID = b"esp32_1_camera"
+
+IMAGE_TOPIC = b"faceauth/esp32_1/image"
+REJECT_TOPIC = b"faceauth/esp32_1/reject"
+
+CAPTURE_INTERVAL_SECONDS = 10
+IMAGE_FILE = "/photo.jpg"
+MAX_IMAGE_BYTES = 180000  # Keep MQTT payload reasonable for MicroPython RAM.
+
+# Camera pins (OV2640: I2C for config, SPI for image data)
+SENSOR_ADDR = 0x30
+SCL, SDA = 14, 13
+SCK, MISO, MOSI, CS_PIN = 12, 11, 10, 9
+
+# -------------------- CAMERA REGISTERS --------------------
+# OV2640 register tables from https://github.com/namato/micropython-ov2640
+OV2640_JPEG_INIT = [
+    [0xff,0x00],[0x2c,0xff],[0x2e,0xdf],[0xff,0x01],[0x3c,0x32],
+    [0x11,0x04],[0x09,0x02],[0x04,0x28],[0x13,0xe5],[0x14,0x48],
+    [0x2c,0x0c],[0x33,0x78],[0x3a,0x33],[0x3b,0xfb],[0x3e,0x00],
+    [0x43,0x11],[0x16,0x10],[0x39,0x92],[0x35,0xda],[0x22,0x1a],
+    [0x37,0xc3],[0x23,0x00],[0x34,0xc0],[0x36,0x1a],[0x06,0x88],
+    [0x07,0xc0],[0x0d,0x87],[0x0e,0x41],[0x4c,0x00],[0x48,0x00],
+    [0x5b,0x00],[0x42,0x03],[0x4a,0x81],[0x21,0x99],[0x24,0x40],
+    [0x25,0x38],[0x26,0x82],[0x5c,0x00],[0x63,0x00],[0x61,0x70],
+    [0x62,0x80],[0x7c,0x05],[0x20,0x80],[0x28,0x30],[0x6c,0x00],
+    [0x6d,0x80],[0x6e,0x00],[0x70,0x02],[0x71,0x94],[0x73,0xc1],
+    [0x12,0x40],[0x17,0x11],[0x18,0x43],[0x19,0x00],[0x1a,0x4b],
+    [0x32,0x09],[0x37,0xc0],[0x4f,0x60],[0x50,0xa8],[0x6d,0x00],
+    [0x3d,0x38],[0x46,0x3f],[0x4f,0x60],[0x0c,0x3c],[0xff,0x00],
+    [0xe5,0x7f],[0xf9,0xc0],[0x41,0x24],[0xe0,0x14],[0x76,0xff],
+    [0x33,0xa0],[0x42,0x20],[0x43,0x18],[0x4c,0x00],[0x87,0xd5],
+    [0x88,0x3f],[0xd7,0x03],[0xd9,0x10],[0xd3,0x82],[0xc8,0x08],
+    [0xc9,0x80],[0x7c,0x00],[0x7d,0x00],[0x7c,0x03],[0x7d,0x48],
+    [0x7d,0x48],[0x7c,0x08],[0x7d,0x20],[0x7d,0x10],[0x7d,0x0e],
+    [0x90,0x00],[0x91,0x0e],[0x91,0x1a],[0x91,0x31],[0x91,0x5a],
+    [0x91,0x69],[0x91,0x75],[0x91,0x7e],[0x91,0x88],[0x91,0x8f],
+    [0x91,0x96],[0x91,0xa3],[0x91,0xaf],[0x91,0xc4],[0x91,0xd7],
+    [0x91,0xe8],[0x91,0x20],[0x92,0x00],[0x93,0x06],[0x93,0xe3],
+    [0x93,0x05],[0x93,0x05],[0x93,0x00],[0x93,0x04],[0x93,0x00],
+    [0x93,0x00],[0x93,0x00],[0x93,0x00],[0x93,0x00],[0x93,0x00],
+    [0x93,0x00],[0x96,0x00],[0x97,0x08],[0x97,0x19],[0x97,0x02],
+    [0x97,0x0c],[0x97,0x24],[0x97,0x30],[0x97,0x28],[0x97,0x26],
+    [0x97,0x02],[0x97,0x98],[0x97,0x80],[0x97,0x00],[0x97,0x00],
+    [0xc3,0xed],[0xa4,0x00],[0xa8,0x00],[0xc5,0x11],[0xc6,0x51],
+    [0xbf,0x80],[0xc7,0x10],[0xb6,0x66],[0xb8,0xa5],[0xb7,0x64],
+    [0xb9,0x7c],[0xb3,0xaf],[0xb4,0x97],[0xb5,0xff],[0xb0,0xc5],
+    [0xb1,0x94],[0xb2,0x0f],[0xc4,0x5c],[0xc0,0x64],[0xc1,0x4b],
+    [0x8c,0x00],[0x86,0x3d],[0x50,0x00],[0x51,0xc8],[0x52,0x96],
+    [0x53,0x00],[0x54,0x00],[0x55,0x00],[0x5a,0xc8],[0x5b,0x96],
+    [0x5c,0x00],[0xd3,0x00],[0xc3,0xed],[0x7f,0x00],[0xda,0x00],
+    [0xe5,0x1f],[0xe1,0x67],[0xe0,0x00],[0xdd,0x7f],[0x05,0x00],
+    [0x12,0x40],[0xd3,0x04],[0xc0,0x16],[0xc1,0x12],[0x8c,0x00],
+    [0x86,0x3d],[0x50,0x00],[0x51,0x2c],[0x52,0x24],[0x53,0x00],
+    [0x54,0x00],[0x55,0x00],[0x5a,0x2c],[0x5b,0x24],[0x5c,0x00],
+    [0xff,0xff]
+]
+
+OV2640_YUV422 = [
+    [0xff,0x00],[0x05,0x00],[0xda,0x10],[0xd7,0x03],[0xdf,0x00],
+    [0x33,0x80],[0x3c,0x40],[0xe1,0x77],[0x00,0x00],[0xff,0xff]
+]
+
+OV2640_JPEG = [
+    [0xe0,0x14],[0xe1,0x77],[0xe5,0x1f],[0xd7,0x03],[0xda,0x10],
+    [0xe0,0x00],[0xff,0x01],[0x04,0x08],[0xff,0xff]
+]
+
+# Full 2 MP UXGA. If MQTT publish fails because image is too large,
+# lower this resolution later or increase RAM/PSRAM support.
+OV2640_1600x1200_JPEG = [
+    [0xff, 0x01], [0x11, 0x00], [0x12, 0x00], [0x17, 0x11],
+    [0x18, 0x75], [0x19, 0x01], [0x1a, 0x97], [0x32, 0x36],
+    [0x4f, 0xbb], [0x50, 0x9c], [0x5a, 0x57], [0x6d, 0x80],
+    [0x3d, 0x34], [0x39, 0x02], [0x35, 0x88], [0x22, 0x0a],
+    [0x37, 0x40], [0x34, 0xa0], [0x06, 0x02], [0x0d, 0xb7],
+    [0x0e, 0x01], [0xff, 0x00], [0xe0, 0x04], [0xc0, 0xc8],
+    [0xc1, 0x96], [0x86, 0x3d], [0x50, 0x00], [0x51, 0x90],
+    [0x52, 0x2c], [0x53, 0x00], [0x54, 0x00], [0x55, 0x88],
+    [0x57, 0x00], [0x5a, 0xc8], [0x5b, 0x96], [0x5c, 0x00],
+    [0xd3, 0x02], [0xe0, 0x00], [0xff, 0xff]
+]
+
+# -------------------- WIFI + MQTT --------------------
+def connect_wifi():
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    if not wlan.isconnected():
+        print("Connecting WiFi...")
+        wlan.connect(WIFI_SSID, WIFI_PASSWORD)
+        start = time.ticks_ms()
+        while not wlan.isconnected():
+            if time.ticks_diff(time.ticks_ms(), start) > 20000:
+                raise RuntimeError("WiFi connection timeout")
+            time.sleep_ms(300)
+    print("WiFi connected:", wlan.ifconfig())
+    return wlan
+
+
+def on_mqtt_message(topic, msg):
+    if topic == REJECT_TOPIC and msg == b"0":
+        print("SERVER RESULT: rejected / unknown person")
+
+
+def connect_mqtt():
+    client = MQTTClient(
+        client_id=MQTT_CLIENT_ID,
+        server=MQTT_BROKER_IP,
+        port=MQTT_BROKER_PORT,
+        keepalive=60,
+    )
+    client.set_callback(on_mqtt_message)
+    client.connect()
+    client.subscribe(REJECT_TOPIC, qos=0)
+    print("MQTT connected to", MQTT_BROKER_IP)
+    print("Subscribed:", REJECT_TOPIC)
+    return client
+
+# -------------------- CAMERA DRIVER --------------------
+class CameraDevice:
+    def __init__(self):
+        self.cs = machine.Pin(CS_PIN, machine.Pin.OUT, value=1)
+        self.i2c = machine.I2C(0, scl=machine.Pin(SCL), sda=machine.Pin(SDA), freq=400000)
+        self.spi = machine.SPI(
+            2,
+            baudrate=4000000,
+            polarity=0,
+            phase=0,
+            sck=machine.Pin(SCK),
+            mosi=machine.Pin(MOSI),
+            miso=machine.Pin(MISO),
+        )
+        self.reset_sensor()
+        self._set_regs(OV2640_JPEG_INIT)
+        self._set_regs(OV2640_YUV422)
+        self._set_regs(OV2640_JPEG)
+        self._set_regs(OV2640_1600x1200_JPEG)
+
+    def reset_sensor(self):
+        self.i2c.writeto_mem(SENSOR_ADDR, 0xff, b"\x01")
+        self.i2c.writeto_mem(SENSOR_ADDR, 0x12, b"\x80")
+        time.sleep_ms(150)
+
+    def _set_regs(self, regset):
+        for r, v in regset:
+            if r == 0xff and v == 0xff:
+                break
+            self.i2c.writeto_mem(SENSOR_ADDR, r, bytes([v]))
+            time.sleep_ms(1)
+
+    def _write_reg(self, address, value):
+        self.cs.value(0)
+        self.spi.write(bytes([address | 0x80, value]))
+        self.cs.value(1)
+
+    def _read_reg(self, address):
+        self.cs.value(0)
+        self.spi.write(bytes([address & 0x7f]))
+        value = self.spi.read(1)[0]
+        self.cs.value(1)
+        return value
+
+    def _read_fifo_length(self):
+        return ((self._read_reg(0x44) & 0x7f) << 16) | (self._read_reg(0x43) << 8) | self._read_reg(0x42)
+
+    def start_capture(self):
+        self._write_reg(0x84, 0x01)  # Clear FIFO
+        time.sleep_ms(3)
+        self._write_reg(0x84, 0x02)  # Start capture
+        time.sleep_ms(10)
+
+    def wait_capture_done(self, timeout_ms=5000):
+        start_time = time.ticks_ms()
+        while not (self._read_reg(0x41) & 0x08):
+            if time.ticks_diff(time.ticks_ms(), start_time) > timeout_ms:
+                return False
+            time.sleep_ms(3)
+        return True
+
+    def capture_to_file(self, filename):
+        self.start_capture()
+        if not self.wait_capture_done():
+            print("Capture timeout")
+            return False
+
+        img_size = self._read_fifo_length()
+        if img_size <= 0:
+            print("Invalid image size")
+            return False
+
+        print("Image size:", img_size, "bytes")
+        self.cs.value(0)
+        self.spi.write(bytes([0x3d]))
+
+        remaining = img_size
+        chunk_size = 1024
+        with open(filename, "wb") as file:
+            while remaining > 0:
+                read_size = chunk_size if remaining >= chunk_size else remaining
+                data = self.spi.read(read_size)
+                file.write(data)
+                remaining -= read_size
+
+        self.cs.value(1)
+        return True
+
+# -------------------- IMAGE PUBLISH --------------------
+def publish_image_file(client, filename):
+    try:
+        size = os.stat(filename)[6]
+    except OSError:
+        print("Image file not found:", filename)
+        return False
+
+    if size <= 0:
+        print("Image is empty")
+        return False
+
+    if size > MAX_IMAGE_BYTES:
+        print("Image too large for simple MQTT publish:", size)
+        print("Reduce camera resolution or increase MAX_IMAGE_BYTES if your ESP32 has enough RAM.")
+        return False
+
+    gc.collect()
+    with open(filename, "rb") as file:
+        image_bytes = file.read()
+
+    print("Publishing image bytes:", len(image_bytes))
+    client.publish(IMAGE_TOPIC, image_bytes, qos=0)
+    print("Image sent to server")
+    return True
+
+
+def main():
+    connect_wifi()
+    mqtt_client = connect_mqtt()
+    camera = CameraDevice()
+
+    while True:
+        try:
+            mqtt_client.check_msg()
+
+            ok = camera.capture_to_file(IMAGE_FILE)
+            if ok:
+                publish_image_file(mqtt_client, IMAGE_FILE)
+            else:
+                print("Capture failed")
+
+            gc.collect()
+
+            # Check server reject messages during the wait period.
+            for _ in range(CAPTURE_INTERVAL_SECONDS * 2):
+                mqtt_client.check_msg()
+                time.sleep_ms(500)
+
+        except Exception as error:
+            print("Runtime error:", error)
+            time.sleep(1)
+            try:
+                mqtt_client.disconnect()
+            except Exception:
+                pass
+            connect_wifi()
+            mqtt_client = connect_mqtt()
+
+
+if __name__ == "__main__":
+    main()

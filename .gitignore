@@ -1,0 +1,11 @@
+# Private data: face photos, face embeddings, login history
+server/people/
+server/face_database.npy
+server/history.json
+server/static/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/

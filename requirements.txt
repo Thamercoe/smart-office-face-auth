@@ -1,0 +1,6 @@
+flask
+paho-mqtt
+numpy
+opencv-python
+insightface
+onnxruntime
